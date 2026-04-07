@@ -9,8 +9,8 @@ import { Clock, Navigation, CheckCircle2, AlertCircle, Package } from 'lucide-re
 import { formatDistanceToNow } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const SOCKET_URL = 'http://localhost:5000';
-const API_URL = 'http://localhost:5000/api';
+const SOCKET_URL = 'https://food-bridge-e5x0.onrender.com';
+const API_URL = 'https://food-bridge-e5x0.onrender.com/api';
 
 // Fix leaflet icon
 delete L.Icon.Default.prototype._getIconUrl;

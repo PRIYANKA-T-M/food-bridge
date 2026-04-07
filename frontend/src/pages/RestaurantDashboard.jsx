@@ -18,7 +18,7 @@ L.Icon.Default.mergeOptions({
   shadowUrl: markerShadow,
 });
 
-const API_URL = 'http://localhost:5000/api/listings';
+const API_URL = 'https://food-bridge-e5x0.onrender.com/api/listings';
 
 const LocationPicker = ({ position, setPosition }) => {
   useMapEvents({
@@ -51,7 +51,7 @@ const RestaurantDashboard = () => {
 
   useEffect(() => {
     if (!user?._id) return;
-    const socket = io('http://localhost:5000');
+    const socket = io('https://food-bridge-e5x0.onrender.com');
     socket.emit('join', user._id);
     socket.on('claim_notification', (data) => {
       setNotifications(prev => [data, ...prev]);
