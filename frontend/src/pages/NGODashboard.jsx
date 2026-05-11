@@ -1,18 +1,17 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Circle, useMapEvents, useMap } from 'react-leaflet';
-import React, { useEffect, useState, useRef } from 'react';
-import useAuthStore from '../store/useAuthStore';
-import axios from 'axios';
 import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
 import { io } from 'socket.io-client';
-import { Clock, Navigation, CheckCircle2, AlertCircle, Package } from 'lucide-react';
+import { AlertCircle, Bell, CheckCircle2, Clock, Download, History, Languages, MapPin, Navigation, Package, Satellite, Search } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
-import { motion, AnimatePresence } from 'framer-motion';
+import useAuthStore from '../store/useAuthStore';
+import api from '../services/api';
+import { createLocalPushToken, requestBrowserNotifications, showBrowserNotification } from '../services/notifications';
+import { SOCKET_ROOT, t } from '../config';
+import TrackingMap from '../components/TrackingMap';
+import FeedbackModal from '../components/FeedbackModal';
+import LocationSearch from '../components/LocationSearch';
 
-const SOCKET_URL = 'https://food-bridge-e5x0.onrender.com';
-const API_URL = 'https://food-bridge-e5x0.onrender.com/api';
-
-// Fix leaflet icon
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
@@ -20,319 +19,355 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
 });
 
-// Custom Icons
-const createCustomIcon = (color) => {
-  return new L.Icon({
-    iconUrl: `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${color}.png`,
-    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-    iconSize: [25, 41],
-    iconAnchor: [12, 41],
-    popupAnchor: [1, -34],
-    shadowSize: [41, 41]
-  });
-};
-
-const blueIcon = createCustomIcon('blue');
-const redIcon = createCustomIcon('red');
-const greyIcon = createCustomIcon('grey');
-
-const LocationPicker = ({ center, setCenter }) => {
-  useMapEvents({
-    click(e) {
-      setCenter([e.latlng.lat, e.latlng.lng]);
-    },
-  });
+const LocationPicker = ({ setCenter }) => {
+  useMapEvents({ click: (event) => setCenter([event.latlng.lat, event.latlng.lng]) });
   return null;
 };
 
 const RecenterMap = ({ center }) => {
   const map = useMap();
-  useEffect(() => {
-    map.setView(center, map.getZoom());
-  }, [center, map]);
+  useEffect(() => { map.setView(center, map.getZoom()); }, [center, map]);
   return null;
 };
 
 const NGODashboard = () => {
-  const { user } = useAuthStore();
-  const defaultCenter = user?.location?.coordinates ? 
-    [user.location.coordinates[1], user.location.coordinates[0]] : 
-    [40.7128, -74.0060]; // fallback
-
+  const { user, updatePreferences } = useAuthStore();
+  const language = user?.language || 'en';
+  const defaultCenter = user?.location?.coordinates ? [user.location.coordinates[1], user.location.coordinates[0]] : [12.9716, 77.5946];
   const [center, setCenter] = useState(defaultCenter);
   const centerRef = useRef(center);
-
-  // Update ref whenever center changes
-  useEffect(() => {
-    centerRef.current = center;
-  }, [center]);
-
+  const [tab, setTab] = useState('nearby');
   const [listings, setListings] = useState([]);
+  const [claims, setClaims] = useState([]);
   const [selectedListing, setSelectedListing] = useState(null);
+  const [trackingClaim, setTrackingClaim] = useState(null);
   const [claimQty, setClaimQty] = useState(1);
-  const [claiming, setClaiming] = useState(false);
   const [claimResult, setClaimResult] = useState(null);
-  const [liveAlert, setLiveAlert] = useState(null);
+  const [alert, setAlert] = useState('');
+  const [search, setSearch] = useState('');
+  const [status, setStatus] = useState('all');
+  const [feedbackClaim, setFeedbackClaim] = useState(null);
 
-  const fetchListings = async (searchLat, searchLng) => {
-    try {
-      const qs = searchLat && searchLng ? `?lat=${searchLat}&lng=${searchLng}` : '';
-      const res = await axios.get(`${API_URL}/listings/nearby${qs}`, {
-        headers: { Authorization: `Bearer ${user.token}` }
-      });
-      setListings(res.data);
-    } catch (err) {
-      console.error('Error fetching listings', err);
-    }
-  };
+  useEffect(() => { centerRef.current = center; }, [center]);
 
-  useEffect(() => {
-    fetchListings(center[0], center[1]);
+  const fetchListings = useCallback(async (lat = center[0], lng = center[1]) => {
+    const res = await api.get(`/listings/nearby?lat=${lat}&lng=${lng}`);
+    setListings(res.data);
   }, [center]);
 
+  const fetchClaims = useCallback(async () => {
+    const res = await api.get('/claims/history', { params: { search, status } });
+    setClaims(res.data.items);
+  }, [search, status]);
+
+  useEffect(() => { fetchListings(); }, [fetchListings]);
+  useEffect(() => { fetchClaims(); }, [fetchClaims]);
+
   useEffect(() => {
-    const socket = io(SOCKET_URL);
-    
-    // Join private room
+    if (!user?._id) return;
+    const socket = io(SOCKET_ROOT);
     socket.emit('join', user._id);
-
-    socket.on('NEW_SURPLUS', (data) => {
-      // Use ref to get current center without triggering re-renders
-      fetchListings(centerRef.current[0], centerRef.current[1]); 
-      setLiveAlert(`🔔 New surplus posted by ${data.restaurantName} - ${(data.distanceMeters / 1000).toFixed(1)} km away!`);
-      setTimeout(() => setLiveAlert(null), 8000);
+    socket.on('NOTIFICATION', (data) => {
+      setAlert(data.message);
+      showBrowserNotification(data.title, { body: data.message });
+      setTimeout(() => setAlert(''), 6000);
     });
-
+    socket.on('NEW_SURPLUS', (data) => {
+      fetchListings(centerRef.current[0], centerRef.current[1]);
+      const message = `New surplus from ${data.restaurantName}`;
+      setAlert(message);
+      showBrowserNotification('New surplus nearby', { body: message });
+      setTimeout(() => setAlert(''), 6000);
+    });
+    socket.on('LOCATION_UPDATE', (data) => {
+      setClaims((items) => items.map((claim) => claim._id === data.claimId ? { ...claim, ...data } : claim));
+      setTrackingClaim((claim) => claim?._id === data.claimId ? { ...claim, ...data } : claim);
+    });
     return () => socket.disconnect();
-  }, []);
+  }, [fetchListings, user?._id]);
 
-  const handleClaim = async (e) => {
-    e.preventDefault();
-    setClaiming(true);
-    try {
-      const res = await axios.post(`${API_URL}/claims`, {
-        listingId: selectedListing._id,
-        requestedQty: Number(claimQty)
-      }, {
-        headers: { Authorization: `Bearer ${user.token}` }
-      });
-      
-      setClaimResult({ success: true, otp: res.data.otpCode });
-      fetchListings(center[0], center[1]); // Refresh to get updated quantities
-    } catch (err) {
-      setClaimResult({ success: false, message: err.response?.data?.message || 'Claim failed' });
+  const enablePush = async () => {
+    const permission = await requestBrowserNotifications();
+    if (permission === 'granted') {
+      await updatePreferences({ fcmToken: createLocalPushToken() });
+      setAlert('Browser notifications enabled for this device.');
+      setTimeout(() => setAlert(''), 5000);
     }
-    setClaiming(false);
   };
 
-  const getMarkerIcon = (listing) => {
-    const minLeft = (new Date(listing.expiryTime) - new Date()) / 60000;
-    if (minLeft < 30) return redIcon; // High Urgency
-    if (listing.remainingQuantity < listing.totalQuantity) return greyIcon; // Partially Claimed
-    return blueIcon; // Fresh
+  const claimListing = async (event) => {
+    event.preventDefault();
+    try {
+      const res = await api.post('/claims', { listingId: selectedListing._id, requestedQty: Number(claimQty) });
+      setClaimResult({ success: true, otp: res.data.otpCode });
+      await Promise.all([fetchListings(), fetchClaims()]);
+    } catch (err) {
+      setClaimResult({ success: false, message: err.response?.data?.message || err.message });
+    }
   };
+
+  const startPickup = async (claim) => {
+    const coords = await new Promise((resolve) => {
+      if (!navigator.geolocation) return resolve(user.location.coordinates);
+      navigator.geolocation.getCurrentPosition(
+        (position) => resolve([position.coords.longitude, position.coords.latitude]),
+        () => resolve(user.location.coordinates),
+        { enableHighAccuracy: true, timeout: 8000 }
+      );
+    });
+    const res = await api.put(`/claims/${claim._id}/start-delivery`, { coordinates: coords });
+    setTrackingClaim(res.data.claim);
+    setTab('tracking');
+  };
+
+  const updateLiveLocation = async () => {
+    if (!trackingClaim) return;
+    navigator.geolocation.getCurrentPosition(async (position) => {
+      const coordinates = [position.coords.longitude, position.coords.latitude];
+      const res = await api.put(`/claims/${trackingClaim._id}/location`, { coordinates });
+      setTrackingClaim(res.data.claim);
+    });
+  };
+
+  const updateManualLocation = async (position) => {
+    if (!trackingClaim) return;
+    const coordinates = [position[1], position[0]];
+    const res = await api.put(`/claims/${trackingClaim._id}/location`, { coordinates });
+    setTrackingClaim(res.data.claim);
+  };
+
+  const markArrived = async () => {
+    if (!trackingClaim) return;
+    const res = await api.put(`/claims/${trackingClaim._id}/arrived`);
+    setTrackingClaim(res.data.claim);
+    await fetchClaims();
+  };
+
+  const downloadReport = () => {
+    const rows = claims.map((claim) => ({
+      id: claim._id,
+      food: claim.listingId?.foodType,
+      restaurant: claim.listingId?.donor?.name,
+      quantity: claim.quantity,
+      status: claim.status,
+      createdAt: claim.createdAt
+    }));
+    const blob = new Blob([JSON.stringify(rows, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'foodbridge-claims-report.json';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const activeClaim = useMemo(() => claims.find((claim) => claim.status === 'pending'), [claims]);
+  const tabs = [
+    ['nearby', t(language, 'nearby'), Package],
+    ['claims', t(language, 'claims'), History],
+    ['tracking', t(language, 'tracking'), Satellite],
+    ['settings', t(language, 'settings'), Languages]
+  ];
 
   return (
-    <div className="flex flex-col md:flex-row h-[calc(100vh-64px)] overflow-hidden">
-      
-      {/* Live Alert Toast */}
-      <AnimatePresence>
-        {liveAlert && (
-          <motion.div 
-            initial={{ opacity: 0, y: -50 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -50 }}
-            className="absolute top-20 left-1/2 -translate-x-1/2 z-[1000] bg-orange-500 text-white px-6 py-3 rounded-full shadow-lg font-medium flex items-center gap-2"
-          >
-            <AlertCircle className="h-5 w-5" />
-            {liveAlert}
-          </motion.div>
-        )}
-      </AnimatePresence>
+    <div className="min-h-[calc(100vh-64px)] bg-slate-50 dark:bg-slate-950">
+      {alert && (
+        <div className="fixed left-1/2 top-20 z-[2500] flex -translate-x-1/2 items-center gap-2 rounded-full bg-orange-500 px-5 py-3 text-sm font-semibold text-white shadow-lg">
+          <Bell className="h-4 w-4" /> {alert}
+        </div>
+      )}
 
-      {/* Map Section */}
-      <div className="w-full md:w-3/5 h-1/2 md:h-full relative z-0">
-        <MapContainer center={center} zoom={13} className="h-full w-full">
-          <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          />
-          {/* Pick Search Location */}
-          <LocationPicker center={center} setCenter={setCenter} />
-          <RecenterMap center={center} />
-
-          {/* NGO Watch Radius */}
-          <Circle
-            center={center}
-            radius={(user.watchRadius || 5) * 1000}
-            pathOptions={{ color: 'blue', fillColor: 'blue', fillOpacity: 0.1 }}
-          />
-          
-          {/* NGO Search Center Location */}
-          <Marker position={center}>
-            <Popup>Searching around this point. Click map to move.</Popup>
-          </Marker>
-
-          {/* Listings */}
-          {listings.map(l => (
-            <Marker key={l._id} position={[l.location.coordinates[1], l.location.coordinates[0]]} icon={getMarkerIcon(l)}>
-              <Popup>
-                <div className="font-bold">{l.donor?.name || 'Restaurant'}</div>
-                <div>{l.remainingQuantity} {l.foodType} meals</div>
-                <button onClick={() => { setSelectedListing(l); setClaimResult(null); }} className="mt-2 text-xs bg-orange-500 text-white px-3 py-1 rounded">Claim Now</button>
-              </Popup>
-            </Marker>
-          ))}
-        </MapContainer>
-      </div>
-
-      {/* Sidebar List */}
-      <div className="w-full md:w-2/5 h-1/2 md:h-full bg-slate-50 border-l border-slate-200 overflow-y-auto p-4 md:p-6 flex flex-col">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold text-slate-800">Nearby Surplus</h2>
-          <span className="text-sm font-medium px-3 py-1 bg-orange-100 text-orange-700 rounded-full">{listings.length} Active</span>
+      <div className="mx-auto max-w-7xl p-4 sm:p-6">
+        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="text-3xl font-black text-slate-900 dark:text-white">NGO Operations</h1>
+            <p className="text-slate-500 dark:text-slate-400">Find food, claim it, track pickup, and close the loop with feedback.</p>
+          </div>
+          <button onClick={enablePush} className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white dark:bg-white dark:text-slate-950">
+            <Bell className="h-4 w-4" /> Enable alerts
+          </button>
         </div>
 
-        <div className="space-y-4 flex-1 overflow-y-auto">
-          {listings.length === 0 ? (
-            <div className="text-center p-8 bg-white rounded-2xl border border-slate-100 border-dashed">
-              <Package className="h-10 w-10 text-slate-300 mx-auto mb-2" />
-              <p className="text-slate-500">No surplus food currently available within your {user.watchRadius}km radius.</p>
-            </div>
-          ) : (
-            listings.map(listing => {
-              const urgencyPulse = (new Date(listing.expiryTime) - new Date()) < 30 * 60000;
-              return (
-                <div key={listing._id} className="p-5 bg-white rounded-2xl border border-slate-100 shadow-sm hover:shadow-md transition-all">
-                  <div className="flex justify-between items-start">
-                    <span className={`text-xs font-bold px-2 py-1 rounded-md ${listing.foodType === 'Veg' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                      {listing.foodType}
-                    </span>
-                    <div className="text-right">
-                      <p className="text-sm text-slate-500 flex items-center gap-1 justify-end">
-                        <Clock className="w-3 h-3" /> Expires
-                      </p>
-                      <p className={`text-sm font-medium ${urgencyPulse ? 'text-red-500 animate-pulse' : 'text-slate-700'}`}>
-                        {formatDistanceToNow(new Date(listing.expiryTime), { addSuffix: true })}
-                      </p>
-                    </div>
-                  </div>
-                  
-                  <h3 className="mt-3 font-bold text-slate-800 text-xl">{listing.remainingQuantity} Meals / Portions</h3>
-                  <p className="text-slate-500 text-sm mt-1">{listing.donor?.name || 'Restaurant'}</p>
-                  
-                  <div className="mt-4 flex items-center gap-2">
-                    <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
-                      <div className="bg-orange-500 h-full rounded-full" style={{ width: `${(listing.remainingQuantity / listing.totalQuantity) * 100}%` }}></div>
-                    </div>
-                    <span className="text-xs font-medium text-slate-500 whitespace-nowrap">{listing.remainingQuantity}/{listing.totalQuantity} Left</span>
-                  </div>
+        <div className="mb-5 flex flex-wrap gap-2">
+          {tabs.map(([id, label, Icon]) => {
+            const icon = React.createElement(Icon, { className: 'h-4 w-4' });
+            return (
+              <button key={id} onClick={() => setTab(id)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold ${tab === id ? 'bg-orange-500 text-white' : 'bg-white text-slate-600 border border-slate-200 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-300'}`}>
+                {icon} {label}
+              </button>
+            );
+          })}
+        </div>
 
-                  <div className="mt-5 flex gap-2">
-                    <button 
-                      onClick={() => { setSelectedListing(listing); setClaimQty(1); setClaimResult(null); }}
-                      className="flex-1 bg-slate-900 border border-slate-900 text-white py-2 rounded-xl text-sm font-medium hover:bg-slate-800 transition-colors"
-                    >
-                      Process Claim
-                    </button>
-                    <a 
-                      href={`https://www.google.com/maps/dir/?api=1&destination=${listing.location.coordinates[1]},${listing.location.coordinates[0]}`}
-                      target="_blank" rel="noreferrer"
-                      className="p-2 border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors"
-                      title="Navigate"
-                    >
-                      <Navigation className="w-5 h-5" />
+        {tab === 'nearby' && (
+          <div className="grid gap-5 lg:grid-cols-[1.3fr_0.9fr]">
+            <div className="space-y-3">
+              <LocationSearch onSelect={(nextCenter) => setCenter(nextCenter)} placeholder="Search pickup area, street, NGO location, or landmark" />
+              <div className="h-[600px] overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800">
+                <MapContainer center={center} zoom={13} className="h-full w-full">
+                  <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                  <LocationPicker setCenter={setCenter} />
+                  <RecenterMap center={center} />
+                  <Circle center={center} radius={(user.watchRadius || 5) * 1000} pathOptions={{ color: '#f97316', fillOpacity: 0.08 }} />
+                  <Marker position={center}><Popup>Search center</Popup></Marker>
+                  {listings.map((listing) => (
+                    <Marker key={listing._id} position={[listing.location.coordinates[1], listing.location.coordinates[0]]}>
+                      <Popup>
+                        <b>{listing.donor?.name || 'Restaurant'}</b><br />
+                        {listing.remainingQuantity} portions of {listing.foodType}<br />
+                        <button onClick={() => { setSelectedListing(listing); setClaimQty(1); setClaimResult(null); }} className="mt-2 rounded bg-orange-500 px-3 py-1 text-xs text-white">Claim</button>
+                      </Popup>
+                    </Marker>
+                  ))}
+                </MapContainer>
+              </div>
+            </div>
+            <div className="space-y-4">
+              {listings.map((listing) => (
+                <div key={listing._id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-orange-600">{listing.foodType}</p>
+                      <h3 className="mt-1 text-xl font-black text-slate-900 dark:text-white">{listing.remainingQuantity} of {listing.totalQuantity} portions</h3>
+                      <p className="text-sm text-slate-500">{listing.donor?.name || 'Restaurant'}</p>
+                    </div>
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                      {formatDistanceToNow(new Date(listing.expiryTime), { addSuffix: true })}
+                    </span>
+                  </div>
+                  <div className="mt-4 flex gap-2">
+                    <button onClick={() => { setSelectedListing(listing); setClaimResult(null); }} className="flex-1 rounded-xl bg-slate-900 py-3 text-sm font-semibold text-white dark:bg-white dark:text-slate-950">Process Claim</button>
+                    <a className="rounded-xl border border-slate-200 p-3 dark:border-slate-700" href={`https://www.google.com/maps/dir/?api=1&destination=${listing.location.coordinates[1]},${listing.location.coordinates[0]}`} target="_blank" rel="noreferrer" title="Navigate">
+                      <Navigation className="h-5 w-5" />
                     </a>
                   </div>
                 </div>
-              )
-            })
-          )}
-        </div>
-      </div>
-
-      {/* Claim Modal Overlay */}
-      <AnimatePresence>
-        {selectedListing && (
-          <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
-              onClick={() => setSelectedListing(null)}
-            />
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-3xl p-6 md:p-8 w-full max-w-md relative z-10 shadow-2xl"
-            >
-              {!claimResult ? (
-                <>
-                  <h3 className="text-2xl font-bold text-slate-800 mb-2">Claim Food</h3>
-                  <p className="text-slate-500 text-sm mb-6">How many portions would you like to claim from {selectedListing.donor?.name}?</p>
-                  
-                  <form onSubmit={handleClaim}>
-                    <div className="mb-6">
-                      <div className="flex justify-between text-sm mb-2 font-medium">
-                        <span className="text-slate-700">Quantity</span>
-                        <span className="text-orange-500">{claimQty} selected</span>
-                      </div>
-                      <input 
-                        type="range" 
-                        min="1" 
-                        max={selectedListing.remainingQuantity} 
-                        value={claimQty}
-                        onChange={(e) => setClaimQty(e.target.value)}
-                        className="w-full accent-orange-500"
-                      />
-                      <div className="flex justify-between text-xs text-slate-400 mt-2">
-                        <span>1</span>
-                        <span>Max {selectedListing.remainingQuantity}</span>
-                      </div>
-                    </div>
-                    <div className="flex gap-3">
-                      <button type="button" onClick={() => setSelectedListing(null)} className="flex-1 py-3 font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors">Cancel</button>
-                      <button type="submit" disabled={claiming} className="flex-1 py-3 font-medium text-white bg-orange-500 hover:bg-orange-600 rounded-xl transition-colors shadow-sm disabled:opacity-50">
-                        {claiming ? 'Confirming...' : 'Confirm Claim'}
-                      </button>
-                    </div>
-                  </form>
-                </>
-              ) : (
-                <div className="text-center py-4">
-                  {claimResult.success ? (
-                    <>
-                      <div className="w-16 h-16 bg-green-100 text-green-500 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <CheckCircle2 className="w-8 h-8" />
-                      </div>
-                      <h3 className="text-2xl font-bold text-slate-800 mb-2">Claim Secured!</h3>
-                      <p className="text-slate-500 mb-6">Present this OTP to the restaurant at pickup.</p>
-                      
-                      <div className="text-4xl font-mono font-bold tracking-widest text-slate-800 bg-slate-100 py-4 rounded-2xl mb-8">
-                        {claimResult.otp}
-                      </div>
-
-                      <button onClick={() => setSelectedListing(null)} className="w-full py-3 font-medium text-white bg-slate-900 hover:bg-slate-800 rounded-xl transition-colors shadow-sm">
-                        Done
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <div className="w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <AlertCircle className="w-8 h-8" />
-                      </div>
-                      <h3 className="text-2xl font-bold text-slate-800 mb-2">Claim Failed</h3>
-                      <p className="text-slate-500 mb-6">{claimResult.message}</p>
-                      <button onClick={() => setSelectedListing(null)} className="w-full py-3 font-medium text-white bg-slate-900 hover:bg-slate-800 rounded-xl transition-colors shadow-sm">
-                        Close
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
-            </motion.div>
+              ))}
+              {!listings.length && <Empty icon={Package} text={`No active surplus within ${user.watchRadius || 5}km.`} />}
+            </div>
           </div>
         )}
-      </AnimatePresence>
 
+        {tab === 'claims' && (
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="flex flex-1 items-center gap-2 rounded-xl border border-slate-200 px-3 dark:border-slate-700">
+                <Search className="h-4 w-4 text-slate-400" />
+                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search restaurant or food" className="w-full bg-transparent py-3 outline-none" />
+              </div>
+              <select value={status} onChange={(event) => setStatus(event.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-3 dark:border-slate-700 dark:bg-slate-950">
+                <option value="all">All status</option>
+                <option value="pending">Pending</option>
+                <option value="picked_up">Completed</option>
+                <option value="no-show">No-show</option>
+              </select>
+              <button onClick={downloadReport} className="inline-flex items-center gap-2 rounded-xl bg-orange-500 px-4 py-3 font-semibold text-white"><Download className="h-4 w-4" /> Report</button>
+            </div>
+            <ClaimList claims={claims} onStart={startPickup} onFeedback={setFeedbackClaim} />
+          </div>
+        )}
+
+        {tab === 'tracking' && (
+          <div className="grid gap-5 lg:grid-cols-[0.9fr_1.2fr]">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+              <h2 className="text-xl font-black">Live Pickup</h2>
+              <p className="mt-1 text-sm text-slate-500">Start a pending claim and keep this tab open while travelling.</p>
+              <button onClick={() => activeClaim && startPickup(activeClaim)} disabled={!activeClaim} className="mt-5 w-full rounded-xl bg-orange-500 py-3 font-semibold text-white disabled:opacity-50">Start Pickup</button>
+              {trackingClaim && (
+                <div className="mt-5 rounded-2xl bg-slate-50 p-4 dark:bg-slate-950">
+                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">Pickup OTP</p>
+                  <p className="mt-2 font-mono text-3xl font-black tracking-widest text-orange-600">{trackingClaim.otpCode}</p>
+                  <p className="mt-1 text-xs text-slate-500">Show this to the restaurant for verification.</p>
+                </div>
+              )}
+              <div className="mt-4">
+                <LocationSearch onSelect={updateManualLocation} placeholder="Move pickup marker by area, street, or landmark" />
+              </div>
+              <button onClick={updateLiveLocation} disabled={!trackingClaim} className="mt-3 w-full rounded-xl border border-slate-200 py-3 font-semibold dark:border-slate-700">Send Current GPS Location</button>
+              <button onClick={markArrived} disabled={!trackingClaim} className="mt-3 w-full rounded-xl bg-emerald-500 py-3 font-semibold text-white disabled:opacity-50">Reached Restaurant</button>
+            </div>
+            {trackingClaim ? <TrackingMap claim={trackingClaim} /> : <Empty icon={MapPin} text="No active pickup selected." />}
+          </div>
+        )}
+
+        {tab === 'settings' && (
+          <div className="rounded-2xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
+            <h2 className="text-xl font-black">Preferences</h2>
+            <p className="mt-2 text-slate-500">Language, dark mode, and browser notifications are saved to your profile.</p>
+            <div className="mt-5 grid gap-4 sm:grid-cols-3">
+              <Info label="Strikes" value={user.strikes || 0} />
+              <Info label="Rating" value={`${user.ratingAverage || 0} (${user.ratingCount || 0})`} />
+              <Info label="Watch radius" value={`${user.watchRadius || 5} km`} />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {selectedListing && (
+        <div className="fixed inset-0 z-[3000] flex items-center justify-center bg-slate-950/50 p-4">
+          <form onSubmit={claimListing} className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl dark:bg-slate-900">
+            {!claimResult ? (
+              <>
+                <h3 className="text-2xl font-black">Claim Food</h3>
+                <p className="mt-1 text-slate-500">{selectedListing.donor?.name} has {selectedListing.remainingQuantity} portions available.</p>
+                <input type="range" min="1" max={selectedListing.remainingQuantity} value={claimQty} onChange={(event) => setClaimQty(event.target.value)} className="mt-6 w-full accent-orange-500" />
+                <p className="mt-2 text-sm font-semibold text-orange-600">{claimQty} portions selected</p>
+                <div className="mt-6 flex gap-3">
+                  <button type="button" onClick={() => setSelectedListing(null)} className="flex-1 rounded-xl bg-slate-100 py-3 font-semibold dark:bg-slate-800">Cancel</button>
+                  <button className="flex-1 rounded-xl bg-orange-500 py-3 font-semibold text-white">Confirm</button>
+                </div>
+              </>
+            ) : (
+              <div className="text-center">
+                {claimResult.success ? <CheckCircle2 className="mx-auto h-14 w-14 text-emerald-500" /> : <AlertCircle className="mx-auto h-14 w-14 text-red-500" />}
+                <h3 className="mt-4 text-2xl font-black">{claimResult.success ? 'Claim Secured' : 'Claim Failed'}</h3>
+                <p className="mt-2 text-slate-500">{claimResult.success ? 'Present this OTP during pickup.' : claimResult.message}</p>
+                {claimResult.success && <div className="mt-5 rounded-2xl bg-slate-100 py-4 font-mono text-4xl font-black tracking-widest dark:bg-slate-800">{claimResult.otp}</div>}
+                <button type="button" onClick={() => setSelectedListing(null)} className="mt-6 w-full rounded-xl bg-slate-900 py-3 font-semibold text-white dark:bg-white dark:text-slate-950">Done</button>
+              </div>
+            )}
+          </form>
+        </div>
+      )}
+
+      {feedbackClaim && <FeedbackModal claim={feedbackClaim} toUserId={feedbackClaim.listingId?.donor?._id} onClose={() => setFeedbackClaim(null)} onSubmitted={fetchClaims} />}
     </div>
   );
 };
+
+const Empty = ({ icon, text }) => {
+  const iconElement = React.createElement(icon, { className: 'mx-auto mb-3 h-9 w-9 text-slate-300' });
+  return (
+    <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-slate-500 dark:border-slate-700 dark:bg-slate-900">
+      {iconElement}
+      {text}
+    </div>
+  );
+};
+
+const Info = ({ label, value }) => (
+  <div className="rounded-2xl bg-slate-50 p-4 dark:bg-slate-950">
+    <p className="text-sm text-slate-500">{label}</p>
+    <p className="mt-1 text-xl font-black">{value}</p>
+  </div>
+);
+
+const ClaimList = ({ claims, onStart, onFeedback }) => (
+  <div className="divide-y divide-slate-100 dark:divide-slate-800">
+    {claims.map((claim) => (
+      <div key={claim._id} className="flex flex-col gap-3 py-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <p className="font-black">{claim.listingId?.foodType || 'Food'} from {claim.listingId?.donor?.name || 'Restaurant'}</p>
+          <p className="text-sm text-slate-500">{claim.quantity} portions • {claim.status} • OTP {claim.otpCode} • {new Date(claim.createdAt).toLocaleString()}</p>
+        </div>
+        <div className="flex gap-2">
+          {claim.status === 'pending' && <button onClick={() => onStart(claim)} className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-white">Start Pickup</button>}
+          {claim.status === 'picked_up' && <button onClick={() => onFeedback(claim)} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold dark:border-slate-700">Feedback</button>}
+        </div>
+      </div>
+    ))}
+    {!claims.length && <Empty icon={Clock} text="No claims match your filters." />}
+  </div>
+);
 
 export default NGODashboard;

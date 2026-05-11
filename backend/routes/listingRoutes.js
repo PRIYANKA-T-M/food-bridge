@@ -3,6 +3,7 @@ import Listing from '../models/Listing.js';
 import User from '../models/User.js';
 import { protect, requireRestaurant, requireNgo } from '../middleware/authMiddleware.js';
 import { io } from '../server.js';
+import { notifyUser } from '../utils/notifications.js';
 
 const router = express.Router();
 
@@ -51,12 +52,49 @@ router.post('/', protect, requireRestaurant, async (req, res) => {
           restaurantName: req.user.name,
           distanceMeters: ngo.dist.calculated
         });
+        notifyUser({
+          recipient: ngo._id,
+          sender: req.user._id,
+          type: 'NEW_SURPLUS',
+          title: 'New surplus nearby',
+          message: `${req.user.name} posted ${totalQuantity} portions of ${foodType}.`,
+          data: { listingId: listing._id, distanceMeters: ngo.dist.calculated, fcmToken: ngo.fcmToken }
+        }).catch(err => console.error('Notification save failed:', err.message));
       });
     } catch (pushErr) {
       console.error('Failed to send push notifications:', pushErr.message);
     }
 
     res.status(201).json(listing);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// @route   GET /api/listings/mine
+// @desc    Restaurant listing history
+router.get('/mine', protect, requireRestaurant, async (req, res) => {
+  try {
+    const { status = 'all', page = 1, limit = 20 } = req.query;
+    const now = new Date();
+    const filter = { donor: req.user._id };
+
+    if (status === 'active') {
+      filter.isExpired = false;
+      filter.expiryTime = { $gt: now };
+      filter.remainingQuantity = { $gt: 0 };
+    }
+    if (status === 'expired') {
+      filter.$or = [{ isExpired: true }, { expiryTime: { $lte: now } }];
+    }
+
+    const skip = (Number(page) - 1) * Number(limit);
+    const [items, total] = await Promise.all([
+      Listing.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)),
+      Listing.countDocuments(filter)
+    ]);
+
+    res.json({ items, total, page: Number(page), pages: Math.ceil(total / Number(limit)) || 1 });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

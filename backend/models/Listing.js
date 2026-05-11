@@ -14,6 +14,8 @@ const listingSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 listingSchema.index({ location: '2dsphere' });
+listingSchema.index({ donor: 1, isExpired: 1, createdAt: -1 });
+listingSchema.index({ expiryTime: 1, isExpired: 1 });
 
 const Listing = mongoose.model('Listing', listingSchema);
 export default Listing;

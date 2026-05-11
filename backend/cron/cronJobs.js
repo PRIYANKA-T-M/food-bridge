@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import Listing from '../models/Listing.js';
 import Claim from '../models/Claim.js';
 import User from '../models/User.js';
+import { notifyUser } from '../utils/notifications.js';
 
 const startCronJobs = () => {
   // Run every minute
@@ -12,12 +13,22 @@ const startCronJobs = () => {
       const graceTime = new Date(now.getTime() - 10 * 60 * 1000);
 
       // 1. Mark expired listings
+      const listingsToExpire = await Listing.find({ expiryTime: { $lt: now }, isExpired: false });
       const expiredListings = await Listing.updateMany(
-        { expiryTime: { $lt: now }, isExpired: false },
+        { _id: { $in: listingsToExpire.map(item => item._id) } },
         { $set: { isExpired: true } }
       );
       if (expiredListings.modifiedCount > 0) {
         console.log(`Marked ${expiredListings.modifiedCount} listings as expired.`);
+        listingsToExpire.forEach((listing) => {
+          notifyUser({
+            recipient: listing.donor,
+            type: 'LISTING_EXPIRED',
+            title: 'Listing expired',
+            message: `${listing.foodType} listing has expired.`,
+            data: { listingId: listing._id }
+          }).catch(err => console.error('Expiry notification failed:', err.message));
+        });
       }
 
       // 2. Identify claims that are 'pending' but listing expiry + grace period has passed
@@ -33,7 +44,16 @@ const startCronJobs = () => {
           await claim.save();
 
           // Add a strike to the NGO
-          await User.findByIdAndUpdate(claim.ngoId, { $inc: { strikes: 1 } });
+          const user = await User.findByIdAndUpdate(claim.ngoId, { $inc: { strikes: 1 } }, { new: true });
+          if (user) {
+            await notifyUser({
+              recipient: user._id,
+              type: 'STRIKE_ALERT',
+              title: 'No-show strike added',
+              message: `A no-show strike was added. Current strikes: ${user.strikes}.`,
+              data: { claimId: claim._id, strikes: user.strikes, fcmToken: user.fcmToken }
+            });
+          }
           console.log(`Marked claim ${claim._id} as no-show and appended strike to NGO ${claim.ngoId}`);
         }
       }

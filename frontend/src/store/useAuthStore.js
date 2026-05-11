@@ -1,7 +1,5 @@
 import { create } from 'zustand';
-import axios from 'axios';
-
-const API_URL = 'https://food-bridge-e5x0.onrender.com/api/auth/';
+import api from '../services/api';
 
 const useAuthStore = create((set) => ({
   user: JSON.parse(localStorage.getItem('user')) || null,
@@ -11,7 +9,7 @@ const useAuthStore = create((set) => ({
   login: async (email, password, role) => {
     set({ isLoading: true, error: null });
     try {
-      const response = await axios.post(`${API_URL}login`, { email, password, role });
+      const response = await api.post('/auth/login', { email, password, role });
       if (response.data) {
         localStorage.setItem('user', JSON.stringify(response.data));
         set({ user: response.data, isLoading: false });
@@ -25,7 +23,7 @@ const useAuthStore = create((set) => ({
   register: async (userData) => {
     set({ isLoading: true, error: null });
     try {
-      const response = await axios.post(`${API_URL}register`, userData);
+      const response = await api.post('/auth/register', userData);
       if (response.data) {
         localStorage.setItem('user', JSON.stringify(response.data));
         set({ user: response.data, isLoading: false });
@@ -39,6 +37,13 @@ const useAuthStore = create((set) => ({
   logout: () => {
     localStorage.removeItem('user');
     set({ user: null });
+  },
+
+  updatePreferences: async (preferences) => {
+    const response = await api.put('/auth/preferences', preferences);
+    localStorage.setItem('user', JSON.stringify(response.data));
+    set({ user: response.data });
+    return response.data;
   },
 
   clearError: () => set({ error: null })

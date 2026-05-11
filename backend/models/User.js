@@ -2,9 +2,9 @@ import mongoose from 'mongoose';
 import bcrypt from 'bcrypt';
 
 const userSchema = new mongoose.Schema({
-  role: { 
-    type: String, 
-    enum: ['restaurant', 'ngo'],
+  role: {
+    type: String,
+    enum: ['restaurant', 'ngo', 'admin'],
     required: true
   },
   name: { type: String, required: true },
@@ -15,7 +15,16 @@ const userSchema = new mongoose.Schema({
     coordinates: { type: [Number], required: true } // [longitude, latitude]
   },
   watchRadius: { type: Number, default: 5 }, // In km, typically for NGO
-  strikes: { type: Number, default: 0 }
+  strikes: { type: Number, default: 0 },
+  isSuspended: { type: Boolean, default: false },
+  fcmToken: { type: String, default: '' },
+  language: { type: String, enum: ['en', 'ta', 'hi', 'ml'], default: 'en' },
+  theme: {
+    mode: { type: String, enum: ['light', 'dark'], default: 'light' },
+    accent: { type: String, default: '#f97316' }
+  },
+  ratingAverage: { type: Number, default: 0 },
+  ratingCount: { type: Number, default: 0 }
 }, { timestamps: true });
 
 // 2dsphere index for geospatial queries
@@ -28,7 +37,7 @@ userSchema.methods.matchPassword = async function(enteredPassword) {
 // Encrypt password before saving
 userSchema.pre('save', async function(next) {
   if (!this.isModified('passwordHash')) {
-    next();
+    return next();
   }
   const salt = await bcrypt.genSalt(10);
   this.passwordHash = await bcrypt.hash(this.passwordHash, salt);

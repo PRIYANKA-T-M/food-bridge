@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import useAuthStore from '../store/useAuthStore';
-import { motion } from 'framer-motion';
+import LocationSearch from '../components/LocationSearch';
 
 const Signup = () => {
   const [formData, setFormData] = useState({
@@ -9,7 +9,8 @@ const Signup = () => {
     email: '',
     password: '',
     role: 'ngo',
-    watchRadius: 5
+    watchRadius: 5,
+    coordinates: [77.5946, 12.9716]
   });
   
   const { register, isLoading, error, clearError } = useAuthStore();
@@ -23,34 +24,26 @@ const Signup = () => {
     e.preventDefault();
     try {
       const data = { ...formData };
-      
-      // Default location (NY) or browser geolocation if we had a more complex setup
-      // For now, let's at least make it clear or try to get it if possible
       data.location = {
         type: 'Point',
-        coordinates: [-74.006, 40.7128] // Default: New York
+        coordinates: data.coordinates
       };
+      delete data.coordinates;
 
-      // In a real app, we'd use navigator.geolocation here
-      // To keep it simple but fix the "mismatch" perception, 
-      // we'll rely on the user adjusting it in the dashboard.
-      
       if (data.role === 'restaurant') {
         delete data.watchRadius;
       }
 
       await register(data);
       navigate('/dashboard');
-    } catch (err) {
+    } catch {
       // internal store handles error
     }
   };
 
   return (
     <div className="flex-1 flex items-center justify-center p-4">
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
+      <div
         className="bg-white p-8 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] w-full max-w-md border border-slate-100"
       >
         <div className="text-center mb-8">
@@ -105,6 +98,17 @@ const Signup = () => {
             />
           </div>
 
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Organization Location</label>
+            <LocationSearch
+              onSelect={(position) => setFormData({ ...formData, coordinates: [position[1], position[0]] })}
+              placeholder="Search your organization address or area"
+            />
+            <p className="mt-2 text-xs text-slate-500">
+              Selected: {formData.coordinates[1].toFixed(5)}, {formData.coordinates[0].toFixed(5)}
+            </p>
+          </div>
+
           {formData.role === 'ngo' && (
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Watch Radius (km)</label>
@@ -127,7 +131,7 @@ const Signup = () => {
         <p className="text-center mt-6 text-slate-500 text-sm">
           Already have an account? <Link to="/login" className="text-orange-500 font-medium hover:underline">Sign in</Link>
         </p>
-      </motion.div>
+      </div>
     </div>
   );
 };
